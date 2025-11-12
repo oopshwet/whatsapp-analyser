@@ -11,9 +11,13 @@ from nltk.corpus import stopwords
 import nltk
 import numpy as np
 import google.generativeai as genai
-from dotenv import load_dotenv
 import os
-import time
+import google.generativeai as genai
+import streamlit as st
+
+# Load from Streamlit Secrets
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+
 
 # ✅ Must be FIRST Streamlit command
 st.set_page_config(page_title="WhatsApp Chat Analyzer", layout="wide")
