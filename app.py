@@ -11,41 +11,45 @@ from nltk.corpus import stopwords
 import nltk
 import numpy as np
 import google.generativeai as genai
-import os
-import google.generativeai as genai
-import streamlit as st
+import time
 
-# Load from Streamlit Secrets
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-
-
-# ✅ Must be FIRST Streamlit command
-st.set_page_config(page_title="WhatsApp Chat Analyzer", layout="wide")
-
-# ---------- Basic Setup ----------
+# -------------------------------------------------
+# ✅ Streamlit & Page Configuration
+# -------------------------------------------------
+st.set_page_config(page_title="💬 WhatsApp Chat Analyzer", layout="wide")
 st.title("💬 WhatsApp Chat Analyzer — Full Dashboard")
 st.write("Upload your exported WhatsApp chat text file (without media) to explore in-depth insights!")
 
-load_dotenv()
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-st.sidebar.success("✅ Gemini API connected successfully")
+# -------------------------------------------------
+# ✅ Load Gemini API Key (Streamlit Cloud safe)
+# -------------------------------------------------
+try:
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    st.sidebar.success("✅ Gemini API connected successfully")
+except Exception as e:
+    st.sidebar.error("❌ Gemini API key not found! Please add it in `.streamlit/secrets.toml`")
+    st.stop()
 
-# Configure Gemini API
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
-# Download NLTK dependencies
+# -------------------------------------------------
+# 📦 NLTK Setup
+# -------------------------------------------------
 nltk.download('vader_lexicon', quiet=True)
 nltk.download('stopwords', quiet=True)
 
-# ---------- File Upload ----------
-uploaded_file = st.file_uploader("📁 Upload your chat file (.txt)", type=["txt"])
+# -------------------------------------------------
+# 📁 File Upload
+# -------------------------------------------------
+uploaded_file = st.file_uploader("📁 Upload your WhatsApp chat file (.txt)", type=["txt"])
 
-# ---------- Data Preprocessing ----------
+# -------------------------------------------------
+# 🔧 Preprocessing
+# -------------------------------------------------
 def preprocess(data):
     pattern = r'\d{1,2}/\d{1,2}/\d{2,4},\s\d{1,2}:\d{2}\u202f?(?:AM|PM|am|pm)\s-\s'
     messages = re.split(pattern, data)[1:]
     dates = re.findall(pattern, data)
     df = pd.DataFrame({'user_message': messages, 'message_date': dates})
+
     df['message_date'] = df['message_date'].str.replace('\u202f', ' ', regex=False)
     df['message_date'] = pd.to_datetime(df['message_date'], format='%m/%d/%y, %I:%M %p - ', errors='coerce')
     df.rename(columns={'message_date': 'date'}, inplace=True)
@@ -59,6 +63,7 @@ def preprocess(data):
         else:
             users.append('group_notification')
             messages.append(entry[0])
+
     df['user'] = users
     df['message'] = messages
     df.drop(columns=['user_message'], inplace=True)
@@ -72,33 +77,24 @@ def preprocess(data):
     df['hour'] = df['date'].dt.hour
     df['minute'] = df['date'].dt.minute
 
-    period = []
-    for hour in df['hour']:
-        if pd.isna(hour):
-            period.append(None)
-        elif hour == 23:
-            period.append('23-00')
-        elif hour == 0:
-            period.append('00-1')
-        else:
-            period.append(f'{hour}-{hour+1}')
-    df['period'] = period
+    df['period'] = df['hour'].apply(lambda h: f'{h}-{(h+1)%24}' if not pd.isna(h) else None)
     return df
 
-# ---------- Emoji Extractor ----------
+# -------------------------------------------------
+# 🔍 Helper Functions
+# -------------------------------------------------
 def extract_emojis(s):
     return [c for c in s if c in emoji.EMOJI_DATA]
 
-# ---------- Word Frequency ----------
 def most_common_words(messages):
     words = []
+    stop_words = stopwords.words('english')
     for msg in messages:
         for word in str(msg).lower().split():
-            if word.isalpha() and word not in stopwords.words('english'):
+            if word.isalpha() and word not in stop_words:
                 words.append(word)
     return Counter(words).most_common(15)
 
-# ---------- Response Time Estimation ----------
 def estimate_response_time(df, user):
     user_msgs = df[df['user'] == user].sort_values('date')
     if len(user_msgs) < 2:
@@ -106,10 +102,11 @@ def estimate_response_time(df, user):
     diffs = user_msgs['date'].diff().dropna().dt.total_seconds() / 60
     return np.mean(diffs)
 
-# ---------- Sentiment Analyzer ----------
 sia = SentimentIntensityAnalyzer()
 
-# ---------- Main Analysis ----------
+# -------------------------------------------------
+# 📊 Main App
+# -------------------------------------------------
 if uploaded_file is not None:
     data = uploaded_file.read().decode("utf-8")
     df = preprocess(data)
@@ -117,8 +114,7 @@ if uploaded_file is not None:
 
     # Sidebar
     st.sidebar.header("Filters")
-    users = df['user'].unique().tolist()
-    users.sort()
+    users = sorted(df['user'].unique().tolist())
     selected_user = st.sidebar.selectbox("Select a user", ["Overall"] + users)
 
     if selected_user != "Overall":
@@ -228,19 +224,8 @@ if uploaded_file is not None:
     ax.pie(tod_counts.values, labels=tod_counts.index, autopct='%1.1f%%')
     st.pyplot(fig)
 
-    # ---------- User Comparison ----------
-    if selected_user == "Overall":
-        st.subheader("⚖️ User Comparison (Messages per Day)")
-        user_daily = df.groupby(['user', 'only_date']).count()['message'].reset_index()
-        fig, ax = plt.subplots(figsize=(10,5))
-        for user in df['user'].unique():
-            user_df = user_daily[user_daily['user'] == user]
-            ax.plot(user_df['only_date'], user_df['message'], label=user)
-        plt.legend()
-        st.pyplot(fig)
-
-    # ---------- Gemini AI Summary ----------
-    st.subheader("🧩 AI Chat Summary & Insights (Google Gemini)")
+    # ---------- AI Summary (Gemini) ----------
+    st.subheader("🧩 AI Chat Summary & Insights (Gemini)")
 
     def summarize_in_chunks(text, chunk_size=5000):
         chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
@@ -249,23 +234,22 @@ if uploaded_file is not None:
         for i, chunk in enumerate(chunks):
             with st.spinner(f"🧠 Summarizing part {i+1}/{len(chunks)}..."):
                 try:
-                    response = model.generate_content(f"Summarize this part of a WhatsApp chat:\n{chunk}")
+                    response = model.generate_content(f"Summarize this WhatsApp chat part:\n{chunk}")
                     summaries.append(response.text)
                     time.sleep(1)
                 except Exception as e:
                     summaries.append(f"(Error in part {i+1}: {e})")
-        combined = " ".join(summaries)
-        return combined
+        return " ".join(summaries)
 
     if st.button("✨ Generate Chat Summary using Gemini"):
         with st.spinner("Analyzing your chat using Gemini..."):
             chat_text = "\n".join(df[df['user'] != 'group_notification']['message'].dropna().astype(str).tolist())
-            chat_text = chat_text[:30000]  # safety limit
+            chat_text = chat_text[:30000]
             partial_summary = summarize_in_chunks(chat_text)
             model = genai.GenerativeModel("gemini-1.5-flash")
             response = model.generate_content(f"""
-            Combine these chat summaries into one coherent overall summary.
-            Highlight tone, major topics, and emotional trends:
+            Combine these summaries into one cohesive overview.
+            Highlight tone, topics, and emotional trends:
             {partial_summary}
             """)
             st.success("✅ Summary generated successfully!")
